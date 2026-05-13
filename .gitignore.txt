@@ -1,0 +1,28 @@
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 数据文件（不提交爬取结果）
+*.csv
+*.xlsx
+*.db
+*.sqlite3
+
+# 图片（海报、分析图）
+*.png
+*.jpg
+posters/          # 如果 crawler_detail 会下载海报到 posters 文件夹
+
+# 敏感配置（虽然没有独立配置文件，但 database.py 中包含密码占位符不算敏感）
+# 但如果有 .env 或 secret 文件则忽略
+.env
+
+# IDE 和系统文件
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 日志
+*.log
