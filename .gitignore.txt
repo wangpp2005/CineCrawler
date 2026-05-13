@@ -1,0 +1,20 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 数据库相关（避免泄露真实密码文件）
+*.db
+*.sqlite
+*.db3
+
+# IDE 和系统文件
+.idea/
+.vscode/
+.DS_Store
+
+# 临时文件和日志
+*.log
+*.tmp
+
+# CSV（避免提交爬取到的数据）
+*.csv
