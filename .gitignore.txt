@@ -1,20 +1,27 @@
-# Python 缓存
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.so
+.Python
+env/
+venv/
+*.egg-info/
 
-# 数据库相关（避免泄露真实密码文件）
-*.db
-*.sqlite
-*.db3
-
-# IDE 和系统文件
-.idea/
-.vscode/
-.DS_Store
-
-# 临时文件和日志
-*.log
-*.tmp
-
-# CSV（避免提交爬取到的数据）
+# 数据文件（防止提交大量数据）
 *.csv
+*.xlsx
+*.db
+*.sqlite3
+data/posters/
+*.jpg
+*.png
+
+# 敏感配置
+config/config.yaml   # 如果包含真实密码
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
