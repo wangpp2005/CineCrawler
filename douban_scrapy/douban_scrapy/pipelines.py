@@ -24,6 +24,7 @@ class CsvExportPipeline:
         self.movie_writer = None
         self.detail_file = None
         self.detail_writer = None
+        self.comment_buffer = {}  # 缓存短评，用于覆盖写入
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -50,6 +51,12 @@ class CsvExportPipeline:
 
         self.comment_folder = os.path.join(self.csv_path, 'comments_csv')
         os.makedirs(self.comment_folder, exist_ok=True)
+
+        # 清空旧的短评CSV文件
+        for old_file in os.listdir(self.comment_folder):
+            if old_file.endswith('.csv'):
+                os.remove(os.path.join(self.comment_folder, old_file))
+        spider.logger.info(f"已清空短评文件夹: {self.comment_folder}")
 
         spider.logger.info(f"CSV批量保存已启动，批量大小: {self.batch_size}")
 
@@ -92,8 +99,18 @@ class CsvExportPipeline:
                 self._flush_csv()
 
         elif isinstance(item, CommentItem):
-            # 短评立即保存（不批量）
-            self._save_comment_csv(item)
+            # 缓存短评，不立即写入
+            movie_title = item.get('movie_title', '未知')
+            if movie_title not in self.comment_buffer:
+                self.comment_buffer[movie_title] = []
+
+            self.comment_buffer[movie_title].append({
+                '序号': item.get('comment_index', ''),
+                '评论者': item.get('username', ''),
+                '评分': item.get('score', ''),
+                '内容': item.get('content', ''),
+                '时间': item.get('comment_time', '')
+            })
 
         return item
 
@@ -113,22 +130,26 @@ class CsvExportPipeline:
             logger.info(f"批量写入 {len(self.detail_buffer)} 条详情数据到CSV")
             self.detail_buffer.clear()
 
-    def _save_comment_csv(self, item):
-        """保存短评到CSV"""
-        clean_title = re.sub(r'[\\/*?:"<>|]', '_', item.get('movie_title', '未知'))
-        comment_csv = os.path.join(self.comment_folder, f'{clean_title}.csv')
-        file_exists = os.path.exists(comment_csv)
-        with open(comment_csv, 'a', newline='', encoding='utf-8-sig') as f:
-            writer = csv.DictWriter(f, fieldnames=['序号', '评论者', '评分', '内容', '时间'])
-            if not file_exists:
+    def _write_comments(self):
+        """写入所有缓存的短评（覆盖模式）"""
+        if not self.comment_buffer:
+            return
+
+        for movie_title, comments in self.comment_buffer.items():
+            clean_title = re.sub(r'[\\/*?:"<>|]', '_', movie_title)
+            comment_csv = os.path.join(self.comment_folder, f'{clean_title}.csv')
+
+            # 按序号排序
+            comments.sort(key=lambda x: int(x['序号']))
+
+            with open(comment_csv, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=['序号', '评论者', '评分', '内容', '时间'])
                 writer.writeheader()
-            writer.writerow({
-                '序号': item.get('comment_index', ''),
-                '评论者': item.get('username', ''),
-                '评分': item.get('score', ''),
-                '内容': item.get('content', ''),
-                '时间': item.get('comment_time', '')
-            })
+                for comment in comments:
+                    writer.writerow(comment)
+            logger.info(f"已保存短评: {movie_title} ({len(comments)}条)")
+
+        self.comment_buffer.clear()
 
     def _sort_csv_by_rank(self):
         """按排名排序CSV文件"""
@@ -159,8 +180,11 @@ class CsvExportPipeline:
             logger.info(f"已按排名排序: {detail_csv}")
 
     def close_spider(self, spider):
-        # 写入剩余数据
+        # 写入剩余的电影数据
         self._flush_csv()
+
+        # 写入所有缓存的短评（覆盖模式）
+        self._write_comments()
 
         # 对CSV文件按排名排序
         self._sort_csv_by_rank()
@@ -170,7 +194,6 @@ class CsvExportPipeline:
         if self.detail_file:
             self.detail_file.close()
         spider.logger.info(f"CSV导出完成，共保存 {len(self.saved_ranks)} 部电影")
-
 
 class MySQLPipeline:
     """批量保存到MySQL"""
@@ -186,6 +209,7 @@ class MySQLPipeline:
         self.saved_ranks = set()
         self.movie_buffer = []
         self.detail_buffer = []
+        self.comment_db_buffer = {}  # 缓存短评，用于覆盖写入
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -208,19 +232,13 @@ class MySQLPipeline:
         self.cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{self.database}` CHARACTER SET utf8mb4")
         self.cursor.execute(f"USE `{self.database}`")
 
-        # TRUNCATE 不支持 IF EXISTS，需要先检查表是否存在
-        self.cursor.execute("SHOW TABLES LIKE 'top250'")
-        if self.cursor.fetchone():
-            self.cursor.execute("TRUNCATE TABLE top250")
-
-        self.cursor.execute("SHOW TABLES LIKE 'top250_detail'")
-        if self.cursor.fetchone():
-            self.cursor.execute("TRUNCATE TABLE top250_detail")
+        # 删除旧表，重新创建
+        self.cursor.execute("DROP TABLE IF EXISTS top250")
+        self.cursor.execute("DROP TABLE IF EXISTS top250_detail")
 
         self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS top250 (
-            id INT PRIMARY KEY AUTO_INCREMENT,
-            movie_rank INT,
+        CREATE TABLE top250 (
+            movie_rank INT PRIMARY KEY,
             title_cn VARCHAR(255),
             title_en VARCHAR(500),
             score VARCHAR(50),
@@ -233,7 +251,7 @@ class MySQLPipeline:
         """)
 
         self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS top250_detail (
+        CREATE TABLE top250_detail (
             movie_rank INT PRIMARY KEY,
             title_cn VARCHAR(255),
             title_en VARCHAR(500),
@@ -254,9 +272,8 @@ class MySQLPipeline:
                 return item
             self.saved_ranks.add(rank)
 
-            # 添加到批量缓冲区
             self.movie_buffer.append((
-                rank,
+                int(rank),
                 item.get('title_cn', ''),
                 item.get('title_en', ''),
                 item.get('score', ''),
@@ -268,7 +285,7 @@ class MySQLPipeline:
             ))
 
             self.detail_buffer.append((
-                rank,
+                int(rank),
                 item.get('title_cn', ''),
                 item.get('title_en', ''),
                 item.get('year', ''),
@@ -278,25 +295,32 @@ class MySQLPipeline:
                 item.get('link', '')
             ))
 
-            # 达到批量大小时提交
             if len(self.movie_buffer) >= self.batch_size:
                 self._flush_db()
 
         elif isinstance(item, CommentItem):
-            # 短评立即保存到独立表
-            self._save_comment_db(item)
+            # 缓存短评，不立即写入
+            movie_title = item.get('movie_title', '未知')
+            if movie_title not in self.comment_db_buffer:
+                self.comment_db_buffer[movie_title] = []
+
+            self.comment_db_buffer[movie_title].append({
+                'comment_index': item.get('comment_index'),
+                'username': item.get('username'),
+                'score': item.get('score'),
+                'content': item.get('content'),
+                'comment_time': item.get('comment_time')
+            })
 
         return item
 
     def _flush_db(self):
-        """批量提交到数据库"""
         try:
             if self.movie_buffer:
                 self.cursor.executemany("""
                 INSERT INTO top250 (movie_rank, title_cn, title_en, score, vote_num, director, actor, intro, link)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, self.movie_buffer)
-                logger.info(f"批量插入 {len(self.movie_buffer)} 条电影数据到MySQL")
                 self.movie_buffer.clear()
 
             if self.detail_buffer:
@@ -307,7 +331,6 @@ class MySQLPipeline:
                 title_cn=VALUES(title_cn), title_en=VALUES(title_en),
                 year=VALUES(year), runtime=VALUES(runtime), genre=VALUES(genre), imdb=VALUES(imdb)
                 """, self.detail_buffer)
-                logger.info(f"批量插入 {len(self.detail_buffer)} 条详情数据到MySQL")
                 self.detail_buffer.clear()
 
             self.connection.commit()
@@ -315,51 +338,60 @@ class MySQLPipeline:
             self.connection.rollback()
             logger.error(f"MySQL批量插入失败: {e}")
 
-    def _save_comment_db(self, item):
-        """保存短评到MySQL（每个电影独立表）"""
-        movie_title = item.get('movie_title', '未知')
-        safe_table_name = re.sub(r'[^0-9a-zA-Z\u4e00-\u9fa5]', '_', movie_title)
-        safe_table_name = f"comments_{safe_table_name}"
-
-        try:
-            self.cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS `{safe_table_name}` (
-                id INT PRIMARY KEY AUTO_INCREMENT,
-                comment_index INT,
-                username VARCHAR(255),
-                score VARCHAR(50),
-                content TEXT,
-                comment_time VARCHAR(100)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """)
-
-            self.cursor.execute(f"""
-            INSERT INTO `{safe_table_name}` 
-            (comment_index, username, score, content, comment_time)
-            VALUES (%s, %s, %s, %s, %s)
-            """, (
-                item.get('comment_index'),
-                item.get('username'),
-                item.get('score'),
-                item.get('content'),
-                item.get('comment_time')
-            ))
-            self.connection.commit()
-        except Exception as e:
-            logger.error(f"短评MySQL保存失败: {e}")
-
     def close_spider(self, spider):
-        # 提交剩余数据
+        # 提交剩余的电影数据
         self._flush_db()
+
+        # 写入所有缓存的短评（覆盖模式）
+        if self.comment_db_buffer:
+            for movie_title, comments in self.comment_db_buffer.items():
+                safe_table_name = re.sub(r'[^0-9a-zA-Z\u4e00-\u9fa5]', '_', movie_title)
+                safe_table_name = f"comments_{safe_table_name}"
+
+                try:
+                    # 删除旧表重新创建（实现覆盖）
+                    self.cursor.execute(f"DROP TABLE IF EXISTS `{safe_table_name}`")
+                    self.cursor.execute(f"""
+                    CREATE TABLE `{safe_table_name}` (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        comment_index INT,
+                        username VARCHAR(255),
+                        score VARCHAR(50),
+                        content TEXT,
+                        comment_time VARCHAR(100)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """)
+
+                    # 按序号排序
+                    comments.sort(key=lambda x: int(x['comment_index']))
+
+                    # 批量插入短评数据
+                    for comment in comments:
+                        self.cursor.execute(f"""
+                        INSERT INTO `{safe_table_name}` 
+                        (comment_index, username, score, content, comment_time)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """, (
+                            comment['comment_index'],
+                            comment['username'],
+                            comment['score'],
+                            comment['content'],
+                            comment['comment_time']
+                        ))
+                    self.connection.commit()
+                    spider.logger.info(f"已保存短评到数据库: {movie_title} ({len(comments)}条)")
+                except Exception as e:
+                    self.connection.rollback()
+                    spider.logger.error(f"短评MySQL保存失败: {e}")
+
         if self.cursor:
             self.cursor.close()
         if self.connection:
             self.connection.close()
         spider.logger.info(f"MySQL保存完成，共保存 {len(self.saved_ranks)} 部电影")
 
-
 class PosterDownloadPipeline:
-    """海报下载管道（批量下载）"""
+    """海报下载管道"""
 
     def __init__(self, poster_path='posters'):
         self.poster_path = poster_path

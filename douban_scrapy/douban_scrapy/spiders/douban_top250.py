@@ -114,6 +114,10 @@ class DoubanTop250Spider(scrapy.Spider):
             summary = response.xpath('//span[@property="v:summary"]/text()').get()
             if summary:
                 intro = summary.strip()
+            else:
+                indent_intro = response.xpath('//div[@class="indent"]/span/text()').get()
+                if indent_intro:
+                    intro = indent_intro.strip()
 
         # 年份、片长、类型、IMDb
         year = ''
@@ -189,7 +193,7 @@ class DoubanTop250Spider(scrapy.Spider):
         )
 
     def parse_comments(self, response):
-        """解析短评 - 修复评分提取"""
+        """解析短评 - 修复评分提取（参考 crawler_detail.py）"""
         movie_rank = response.meta['movie_rank']
         movie_title = response.meta['movie_title']
 
@@ -201,24 +205,51 @@ class DoubanTop250Spider(scrapy.Spider):
             username = comment.xpath('.//span[@class="comment-info"]/a/text()').get()
             username = username.strip() if username else '匿名用户'
 
-            # 修复评分：从rating标签的title属性获取（如"力荐"、"推荐"、"还行"等）
-            rating = comment.xpath('.//span[@class="rating"]/@title').get()
-            if rating:
-                rating = rating.strip()
+            # 修复评分：参考 crawler_detail.py 的方法
+            rating = '未评分'
+
+            # 方法1：获取 rating 标签的 title 属性
+            rating_title = comment.xpath('.//span[@class="rating"]/@title').get()
+            if rating_title and rating_title.strip():
+                rating = rating_title.strip()
             else:
-                # 如果没有rating，尝试获取class中的星星数
-                rating_class = comment.xpath('.//span[@class="rating"]/@class').get()
-                if rating_class:
-                    # 例如 "rating star5" 表示5星
-                    star_match = re.search(r'star(\d)', rating_class)
-                    if star_match:
-                        star_num = star_match.group(1)
-                        rating_map = {'5': '力荐', '4': '推荐', '3': '还行', '2': '较差', '1': '很差'}
-                        rating = rating_map.get(star_num, '未评分')
-                    else:
-                        rating = '未评分'
-                else:
-                    rating = '未评分'
+                # 方法2：获取所有评分相关的span，检查class中的star等级
+                rating_spans = comment.xpath('.//span[contains(@class, "rating")]')
+                for span in rating_spans:
+                    rating_class = span.xpath('@class').get()
+                    if rating_class:
+                        # 例如 "rating star5" 表示5星
+                        star_match = re.search(r'star(\d)', rating_class)
+                        if star_match:
+                            star_num = star_match.group(1)
+                            rating_map = {
+                                '5': '力荐',
+                                '4': '推荐',
+                                '3': '还行',
+                                '2': '较差',
+                                '1': '很差'
+                            }
+                            rating = rating_map.get(star_num, '未评分')
+                            break
+
+                # 方法3：如果还没有找到，尝试从所有span的class中查找
+                if rating == '未评分':
+                    all_spans = comment.xpath('.//span')
+                    for span in all_spans:
+                        span_class = span.xpath('@class').get()
+                        if span_class:
+                            star_match = re.search(r'star(\d)', span_class)
+                            if star_match:
+                                star_num = star_match.group(1)
+                                rating_map = {
+                                    '5': '力荐',
+                                    '4': '推荐',
+                                    '3': '还行',
+                                    '2': '较差',
+                                    '1': '很差'
+                                }
+                                rating = rating_map.get(star_num, '未评分')
+                                break
 
             # 评论时间
             c_time = comment.xpath('.//span[@class="comment-time"]/text()').get()
