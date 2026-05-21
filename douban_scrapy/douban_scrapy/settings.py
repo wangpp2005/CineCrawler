@@ -64,6 +64,9 @@ MYSQL_DATABASE = 'douban_movie1'
 
 CSV_EXPORT_PATH = 'output'
 POSTER_PATH = 'posters'
+BATCH_SIZE = 25
 
-# 在文件末尾添加
-BATCH_SIZE = 25  # 每25部电影批量保存一次
+LOG_ENABLED = True
+LOG_FILE = 'crawl.log'          # 日志文件名
+LOG_LEVEL = 'INFO'              # 日志级别: DEBUG, INFO, WARNING, ERROR
+LOG_ENCODING = 'utf-8'          # 日志编码
